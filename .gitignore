@@ -3,6 +3,3 @@ __pycache__/
 .venv/
 venv/
 .env
-model.h5
-*.h5
-*.pkl

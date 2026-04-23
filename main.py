@@ -6,6 +6,13 @@ import numpy as np
 import tensorflow as tf
 from pydantic import BaseModel
 
+import os
+
+BASE_DIR = os.getcwd()
+
+model_path = os.path.join(BASE_DIR, "tf_model.h5")
+preprocessor_path = os.path.join(BASE_DIR, "preprocessing.pkl")
+
 
 
 
