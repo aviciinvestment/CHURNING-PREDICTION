@@ -4,7 +4,10 @@ import io
 import joblib
 import numpy as np
 import tensorflow as tf
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+import logging
+
+logging.basicConfig(level = logging.INFO)
 
 import os
 
@@ -21,14 +24,14 @@ app = FastAPI()
 model = tf.keras.models.load_model("tf_model.h5")
 preprocessor = joblib.load("preprocessing.pkl")
 class UserInput(BaseModel):
-    CreditScore:float
-    Age:int
-    Tenure:float
-    Balance:float
-    NumOfProducts:float
-    HasCrCard:int
-    IsActiveMember:int
-    EstimatedSalary:float
+    CreditScore:float = Field(..., ge = 300,le = 900)
+    Age:int = Field(..., ge = 18,le = 100)
+    Tenure:float = Field(..., ge = 0,le = 50)
+    Balance:float = Field(..., ge = 0)
+    NumOfProducts:float = Field(..., ge = 1,le = 10)
+    HasCrCard:int = Field(..., ge = 0,le = 1)
+    IsActiveMember:int = Field(..., ge = 0,le = 1)
+    EstimatedSalary:float = Field(..., ge = 0)
     Geography:str
     Gender:str
 @app.get("/")
@@ -88,18 +91,26 @@ async def upload_file(file:UploadFile = File(...)):
     
 @app.post("/predict")
 def predict_score(data: UserInput):
-    new_data = pd.DataFrame({
-        "CreditScore":[data.CreditScore],"Age":[data.Age],
-        "Tenure":[data.Tenure],"Balance":[data.Balance],
-        "NumOfProducts":[data.NumOfProducts],"HasCrCard":[data.HasCrCard],
-        "IsActiveMember":[data.IsActiveMember],"EstimatedSalary":[data.EstimatedSalary],
-        "Geography":[data.Geography],"Gender":[data.Gender]						
-    })
-    
-    new_processed = preprocessor.transform(new_data)
-    new_processed = new_processed.toarray() if hasattr(new_processed,"toarray") else new_processed
+    try:
+        logging.info(f"Received input: {data}")
+        new_data = pd.DataFrame({
+            "CreditScore":[data.CreditScore],"Age":[data.Age],
+            "Tenure":[data.Tenure],"Balance":[data.Balance],
+            "NumOfProducts":[data.NumOfProducts],"HasCrCard":[data.HasCrCard],
+            "IsActiveMember":[data.IsActiveMember],"EstimatedSalary":[data.EstimatedSalary],
+            "Geography":[data.Geography],"Gender":[data.Gender]						
+        })
 
-    prediction = model.predict(new_processed)
-    return {
-        "predicted score": float(prediction.flatten()[0] >= 0.5)                                                                
-    }
+        new_processed = preprocessor.transform(new_data)
+        new_processed = new_processed.toarray() if hasattr(new_processed,"toarray") else new_processed
+
+        prediction = model.predict(new_processed)
+        result = float(prediction.flatten()[0] >= 0.5)
+        logging.info(f"prediction result: {result}")        
+        return {
+            "predicted score": result                                                            
+        }
+    
+    except Exception as e:
+        logging.error(f"Error occurred: {str(e)}")
+        return {"error": str(e)}
