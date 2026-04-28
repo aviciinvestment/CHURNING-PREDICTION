@@ -10,6 +10,9 @@ import json
 from datetime import datetime
 import os
 import time
+import asyncio
+
+cache = {}
 
 BASE_DIR = os.getcwd()
 model_path = os.path.join(BASE_DIR, "tf_model.h5")
@@ -105,7 +108,7 @@ async def upload_file(file:UploadFile = File(...)):
         return {"error":str(e)}
     
 @app.post("/predict")
-def predict_score(data: UserInput):
+async def predict_score(data: UserInput):
     try:
         log_event("Request_receied",data.dict())
         new_data = pd.DataFrame({
@@ -116,10 +119,20 @@ def predict_score(data: UserInput):
             "Geography":[data.Geography],"Gender":[data.Gender]						
         })
 
+        input_key = str(data.dict())
+
+        if input_key in cache:
+            log_event("cache_hit", data.dict())
+            return {"predicted score": cache[input_key]}
+
+
         new_processed = preprocessor.transform(new_data)
         new_processed = new_processed.toarray() if hasattr(new_processed,"toarray") else new_processed
         start_time = time.time()
-        prediction = model.predict(new_processed)
+        prediction = await asyncio.to_thread(model.predict(new_processed))
+
+        cache[input_key] = result 
+
         result = float(prediction.flatten()[0] >= 0.5)
         end_time = time.time()
 
