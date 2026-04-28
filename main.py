@@ -6,15 +6,29 @@ import numpy as np
 import tensorflow as tf
 from pydantic import BaseModel, Field
 import logging
-
-logging.basicConfig(level = logging.INFO)
-
+import json
+from datetime import datetime
 import os
 
 BASE_DIR = os.getcwd()
-
 model_path = os.path.join(BASE_DIR, "tf_model.h5")
 preprocessor_path = os.path.join(BASE_DIR, "preprocessing.pkl")
+
+logging.basicConfig(level = logging.INFO)
+
+
+def log_event(event_type, data):
+    log_data = {
+        "event": event_type,
+        "data": data,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    logging.info(json.dumps(log_data))
+
+
+
+
+
 
 
 
@@ -92,7 +106,7 @@ async def upload_file(file:UploadFile = File(...)):
 @app.post("/predict")
 def predict_score(data: UserInput):
     try:
-        logging.info(f"Received input: {data}")
+        log_event("Request_receied",data.dict())
         new_data = pd.DataFrame({
             "CreditScore":[data.CreditScore],"Age":[data.Age],
             "Tenure":[data.Tenure],"Balance":[data.Balance],
@@ -106,7 +120,10 @@ def predict_score(data: UserInput):
 
         prediction = model.predict(new_processed)
         result = float(prediction.flatten()[0] >= 0.5)
-        logging.info(f"prediction result: {result}")        
+        log_event("prediction made", {
+            "input": data.dict(),
+            "result":result
+        })        
         return {
             "predicted score": result                                                            
         }
