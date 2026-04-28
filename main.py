@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 import time
 import asyncio
+from typing import List
 
 cache = {}
 
@@ -149,3 +150,35 @@ async def predict_score(data: UserInput):
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}")
         return {"error": str(e)}
+    
+
+@app.post("/predict_batch") 
+async def predict_batch(data:List[UserInput]):
+    rows = []
+    for item in data:
+        rows.append(
+            {
+                "CreditScore": item.CreditScore,
+                "Age":item.Age,
+                "Tenure": item.Tenure,
+                "Balance": item.Balance,
+                "NumOfProducts": item.NumOfProducts,
+                "HasCrCard": item.HasCrCard,
+                "IsActiveMember": item.IsActiveMember,
+                "EstimatedSalary": item.EstimatedSalary,
+                "Geography": item.Geography,
+                "Gender": item.Gender
+            }
+        )
+
+        df = pd.DataFrame(rows)
+
+        processed = preprocessor.transform(df)
+        processed = processed.toarray() if hasattr(processed, "toarray") else processed
+
+        prediction = await asyncio.to_thread(model.predict, processed)
+
+
+        results = [float(p >= 0.5) for p in prediction.flatten()]
+
+        return {"prediction": results}
