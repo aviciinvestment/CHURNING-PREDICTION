@@ -9,6 +9,7 @@ import logging
 import json
 from datetime import datetime
 import os
+import time
 
 BASE_DIR = os.getcwd()
 model_path = os.path.join(BASE_DIR, "tf_model.h5")
@@ -117,9 +118,13 @@ def predict_score(data: UserInput):
 
         new_processed = preprocessor.transform(new_data)
         new_processed = new_processed.toarray() if hasattr(new_processed,"toarray") else new_processed
-
+        start_time = time.time()
         prediction = model.predict(new_processed)
         result = float(prediction.flatten()[0] >= 0.5)
+        end_time = time.time()
+
+        log_event("performance", {
+           "latency_seconds":end_time-start_time})
         log_event("prediction made", {
             "input": data.dict(),
             "result":result
