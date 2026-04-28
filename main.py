@@ -12,6 +12,19 @@ import os
 import time
 import asyncio
 from typing import List
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
+from fastapi import Header, HTTPException
+from fastapi import Depends
+
+
+API_KEY = os.getenv("API_KEY")
+
+
+limiter = Limiter(key_func = get_remote_address)
+app.state.limiter = limiter
 
 cache = {}
 
@@ -33,7 +46,9 @@ def log_event(event_type, data):
 
 
 
-
+def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code = 401, detail = "Unauthorized")
 
 
 
@@ -56,6 +71,8 @@ class UserInput(BaseModel):
 @app.get("/")
 def home():
     return {"message": "API is working"}
+
+
 @app.post("/student")
 def process_student(name:str,score:int):
     if score >= 90:
@@ -107,9 +124,17 @@ async def upload_file(file:UploadFile = File(...)):
     
     except Exception as e:
         return {"error":str(e)}
-    
+
+
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(request, exc):
+    return JSONResponse(
+        status_code = 429,
+        content = {"error": "Too Many requests. slow down."}
+    )
 @app.post("/predict")
-async def predict_score(data: UserInput):
+@limiter.limit("10/minute")
+async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
         log_event("Request_receied",data.dict())
         new_data = pd.DataFrame({
@@ -153,7 +178,8 @@ async def predict_score(data: UserInput):
     
 
 @app.post("/predict_batch") 
-async def predict_batch(data:List[UserInput]):
+@limiter.limit("10/minute")
+async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api_key)):
     rows = []
     for item in data:
         rows.append(
