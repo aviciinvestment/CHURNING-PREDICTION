@@ -49,6 +49,16 @@ def log_event(event_type, data):
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code = 401, detail = "Unauthorized")
+    
+
+def save_prediction(data, result):
+    record = {
+        "input":data,
+        "prediction": result,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    with open ("data_logs.jsonl","a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 
@@ -132,7 +142,7 @@ def rate_limit_handler(request, exc):
         status_code = 429,
         content = {"error": "Too Many requests. slow down."}
     )
-@app.post("/predict")
+@app.post("/v1/predict")
 @limiter.limit("10/minute")
 async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
@@ -146,6 +156,7 @@ async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key))
         })
 
         input_key = str(data.dict())
+        
 
         if input_key in cache:
             log_event("cache_hit", data.dict())
@@ -167,9 +178,12 @@ async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key))
         log_event("prediction made", {
             "input": data.dict(),
             "result":result
-        })        
+        })   
+
+        save_prediction(data.dict(), result)     
         return {
-            "predicted score": result                                                            
+            "predicted score": result,
+             "message": "model version 1"                                                          
         }
     
     except Exception as e:
@@ -177,7 +191,7 @@ async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key))
         return {"error": str(e)}
     
 
-@app.post("/predict_batch") 
+@app.post("/v2/predict") 
 @limiter.limit("10/minute")
 async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api_key)):
     rows = []
@@ -198,6 +212,7 @@ async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api
         )
 
         df = pd.DataFrame(rows)
+        
 
         processed = preprocessor.transform(df)
         processed = processed.toarray() if hasattr(processed, "toarray") else processed
@@ -206,5 +221,6 @@ async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api
 
 
         results = [float(p >= 0.5) for p in prediction.flatten()]
+        save_prediction(data.dict(), result)
 
-        return {"prediction": results}
+        return {"prediction": results, "message": "model version 2"}
