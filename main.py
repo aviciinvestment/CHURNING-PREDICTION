@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -83,7 +83,7 @@ def home():
 
 # ===================== RATE LIMIT HANDLER =====================
 @app.exception_handler(RateLimitExceeded)
-def rate_limit_handler(request, exc):
+def rate_limit_handler(request: Request, exc):
     return JSONResponse(
         status_code=429,
         content={"error": "Too many requests. Slow down."}
@@ -92,7 +92,7 @@ def rate_limit_handler(request, exc):
 # ===================== SINGLE PREDICTION =====================
 @app.post("/v1/predict")
 @limiter.limit("10/minute")
-async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key)):
+async def predict_score(request: Request, data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
         log_event("request_received", data.dict())
 
@@ -152,7 +152,7 @@ async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key))
 # ===================== BATCH PREDICTION =====================
 @app.post("/v2/predict")
 @limiter.limit("10/minute")
-async def predict_batch(data: List[UserInput], api_key: str = Depends(verify_api_key)):
+async def predict_batch(request: Request, data: List[UserInput], api_key: str = Depends(verify_api_key)):
     try:
         rows = []
 
