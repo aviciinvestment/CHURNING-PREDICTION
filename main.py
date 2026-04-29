@@ -17,8 +17,25 @@ import time
 import asyncio
 from typing import List
 
+
+import sqlite3
+
+conn = sqlite3.connect("ai_logs.db", check_same_thread=False)
+cursor = conn.cursor()
+
+
 # ===================== APP INIT =====================
 app = FastAPI()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    input TEXT,
+    prediction REAL,
+    timestamp TEXT
+)
+""")
+conn.commit()
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -55,13 +72,15 @@ def verify_api_key(x_api_key: str = Header(...)):
 
 # ===================== DATA SAVE =====================
 def save_prediction(data, result):
-    record = {
-        "input": data,
-        "prediction": result,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    with open("data_logs.jsonl", "a") as f:
-        f.write(json.dumps(record) + "\n")
+    cursor.execute("""
+        INSERT INTO predictions (input, prediction, timestamp)
+        VALUES (?, ?, ?)
+    """, (
+        str(data),
+        result,
+        datetime.utcnow().isoformat()
+    ))
+    conn.commit()
 
 # ===================== MODEL INPUT =====================
 class UserInput(BaseModel):
