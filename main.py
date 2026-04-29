@@ -24,6 +24,7 @@ conn = sqlite3.connect("ai_logs.db", check_same_thread=False)
 cursor = conn.cursor()
 
 
+print(os.listdir())
 # ===================== APP INIT =====================
 app = FastAPI()
 
