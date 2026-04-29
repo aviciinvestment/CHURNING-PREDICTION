@@ -1,8 +1,12 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 import pandas as pd
 import io
 import joblib
-import numpy as np
 import tensorflow as tf
 from pydantic import BaseModel, Field
 import logging
@@ -12,28 +16,26 @@ import os
 import time
 import asyncio
 from typing import List
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from fastapi.responses import JSONResponse
-from fastapi import Header, HTTPException
-from fastapi import Depends
 
+# ===================== APP INIT =====================
+app = FastAPI()
 
-API_KEY = os.getenv("API_KEY")
-
-
-limiter = Limiter(key_func = get_remote_address)
+limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
-cache = {}
+# ===================== CONFIG =====================
+API_KEY = os.getenv("API_KEY")
 
 BASE_DIR = os.getcwd()
 model_path = os.path.join(BASE_DIR, "tf_model.h5")
 preprocessor_path = os.path.join(BASE_DIR, "preprocessing.pkl")
 
-logging.basicConfig(level = logging.INFO)
+# ===================== LOAD MODEL =====================
+model = tf.keras.models.load_model(model_path)
+preprocessor = joblib.load(preprocessor_path)
 
+# ===================== LOGGING =====================
+logging.basicConfig(level=logging.INFO)
 
 def log_event(event_type, data):
     log_data = {
@@ -43,163 +45,121 @@ def log_event(event_type, data):
     }
     logging.info(json.dumps(log_data))
 
+# ===================== CACHE =====================
+cache = {}
 
-
-
+# ===================== AUTH =====================
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
-        raise HTTPException(status_code = 401, detail = "Unauthorized")
-    
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
+# ===================== DATA SAVE =====================
 def save_prediction(data, result):
     record = {
-        "input":data,
+        "input": data,
         "prediction": result,
         "timestamp": datetime.utcnow().isoformat()
     }
-    with open ("data_logs.jsonl","a") as f:
+    with open("data_logs.jsonl", "a") as f:
         f.write(json.dumps(record) + "\n")
 
-
-
-
-
-app = FastAPI()
-model = tf.keras.models.load_model("tf_model.h5")
-preprocessor = joblib.load("preprocessing.pkl")
+# ===================== MODEL INPUT =====================
 class UserInput(BaseModel):
-    CreditScore:float = Field(..., ge = 300,le = 900)
-    Age:int = Field(..., ge = 18,le = 100)
-    Tenure:float = Field(..., ge = 0,le = 50)
-    Balance:float = Field(..., ge = 0)
-    NumOfProducts:float = Field(..., ge = 1,le = 10)
-    HasCrCard:int = Field(..., ge = 0,le = 1)
-    IsActiveMember:int = Field(..., ge = 0,le = 1)
-    EstimatedSalary:float = Field(..., ge = 0)
-    Geography:str
-    Gender:str
+    CreditScore: float = Field(..., ge=300, le=900)
+    Age: int = Field(..., ge=18, le=100)
+    Tenure: float = Field(..., ge=0, le=50)
+    Balance: float = Field(..., ge=0)
+    NumOfProducts: float = Field(..., ge=1, le=10)
+    HasCrCard: int = Field(..., ge=0, le=1)
+    IsActiveMember: int = Field(..., ge=0, le=1)
+    EstimatedSalary: float = Field(..., ge=0)
+    Geography: str
+    Gender: str
+
+# ===================== ROOT =====================
 @app.get("/")
 def home():
     return {"message": "API is working"}
 
-
-@app.post("/student")
-def process_student(name:str,score:int):
-    if score >= 90:
-        remark = "Excellent"
-    elif score >= 70:
-        remark = "Good"
-    elif score >= 50:
-        remark = "Average"
-    else:
-        remark = "Fail"
-
-    return {
-        "name":name,
-        "score":score,
-        "remark":remark
-    }
-
-@app.post("/upload")
-async def upload_file(file:UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        if not contents:
-            return {"error": "file is empty"}
-        df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
-        if "score" not in df.columns:
-            return {"error": "csv must contain a 'score' column"}
-        if not pd.api.types.is_numeric_dtype(df['score']):
-            return{"error": "'score' column must contain numbers"}
-        df = df.dropna(subset=["score"])
-        if len(df) == 0:
-            return {"error": "Novalid score data found"}
-
-        average_score = df["score"].mean()
-        max_score = df["score"].max()
-        min_score = df["score"].min()
-
-
-        passed = len(df[df["score"]>=50])
-        failed = len(df[df["score"]<50])
-
-        return {
-            "average_score": round(float(average_score), 2),
-            "highest_score": int(max_score),
-            "lowest_score": int(min_score),
-            "total_students": int(len(df)),
-            "passed":int(passed),
-            "failed":int(failed)
-        }
-    
-    except Exception as e:
-        return {"error":str(e)}
-
-
+# ===================== RATE LIMIT HANDLER =====================
 @app.exception_handler(RateLimitExceeded)
 def rate_limit_handler(request, exc):
     return JSONResponse(
-        status_code = 429,
-        content = {"error": "Too Many requests. slow down."}
+        status_code=429,
+        content={"error": "Too many requests. Slow down."}
     )
+
+# ===================== SINGLE PREDICTION =====================
 @app.post("/v1/predict")
 @limiter.limit("10/minute")
 async def predict_score(data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
-        log_event("Request_receied",data.dict())
-        new_data = pd.DataFrame({
-            "CreditScore":[data.CreditScore],"Age":[data.Age],
-            "Tenure":[data.Tenure],"Balance":[data.Balance],
-            "NumOfProducts":[data.NumOfProducts],"HasCrCard":[data.HasCrCard],
-            "IsActiveMember":[data.IsActiveMember],"EstimatedSalary":[data.EstimatedSalary],
-            "Geography":[data.Geography],"Gender":[data.Gender]						
-        })
+        log_event("request_received", data.dict())
 
         input_key = str(data.dict())
-        
 
+        # CACHE CHECK
         if input_key in cache:
             log_event("cache_hit", data.dict())
-            return {"predicted score": cache[input_key]}
+            return {"predicted score": cache[input_key], "message": "cached result"}
 
+        # PREPARE DATA
+        new_data = pd.DataFrame({
+            "CreditScore": [data.CreditScore],
+            "Age": [data.Age],
+            "Tenure": [data.Tenure],
+            "Balance": [data.Balance],
+            "NumOfProducts": [data.NumOfProducts],
+            "HasCrCard": [data.HasCrCard],
+            "IsActiveMember": [data.IsActiveMember],
+            "EstimatedSalary": [data.EstimatedSalary],
+            "Geography": [data.Geography],
+            "Gender": [data.Gender]
+        })
 
         new_processed = preprocessor.transform(new_data)
-        new_processed = new_processed.toarray() if hasattr(new_processed,"toarray") else new_processed
-        start_time = time.time()
-        prediction = await asyncio.to_thread(model.predict(new_processed))
+        new_processed = new_processed.toarray() if hasattr(new_processed, "toarray") else new_processed
 
-        cache[input_key] = result 
+        # PERFORMANCE TRACKING
+        start_time = time.time()
+
+        prediction = await asyncio.to_thread(model.predict, new_processed)
 
         result = float(prediction.flatten()[0] >= 0.5)
+
+        cache[input_key] = result
+
         end_time = time.time()
 
-        log_event("performance", {
-           "latency_seconds":end_time-start_time})
-        log_event("prediction made", {
-            "input": data.dict(),
-            "result":result
-        })   
+        log_event("performance", {"latency_seconds": end_time - start_time})
 
-        save_prediction(data.dict(), result)     
+        log_event("prediction_made", {
+            "input": data.dict(),
+            "result": result
+        })
+
+        save_prediction(data.dict(), result)
+
         return {
             "predicted score": result,
-             "message": "model version 1"                                                          
+            "message": "model version v1"
         }
-    
+
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}")
         return {"error": str(e)}
-    
 
-@app.post("/v2/predict") 
+# ===================== BATCH PREDICTION =====================
+@app.post("/v2/predict")
 @limiter.limit("10/minute")
-async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api_key)):
-    rows = []
-    for item in data:
-        rows.append(
-            {
+async def predict_batch(data: List[UserInput], api_key: str = Depends(verify_api_key)):
+    try:
+        rows = []
+
+        for item in data:
+            rows.append({
                 "CreditScore": item.CreditScore,
-                "Age":item.Age,
+                "Age": item.Age,
                 "Tenure": item.Tenure,
                 "Balance": item.Balance,
                 "NumOfProducts": item.NumOfProducts,
@@ -208,19 +168,26 @@ async def predict_batch(data:List[UserInput],  api_key: str = Depends(verify_api
                 "EstimatedSalary": item.EstimatedSalary,
                 "Geography": item.Geography,
                 "Gender": item.Gender
-            }
-        )
+            })
 
         df = pd.DataFrame(rows)
-        
 
         processed = preprocessor.transform(df)
         processed = processed.toarray() if hasattr(processed, "toarray") else processed
 
         prediction = await asyncio.to_thread(model.predict, processed)
 
-
         results = [float(p >= 0.5) for p in prediction.flatten()]
-        save_prediction(data.dict(), result)
 
-        return {"prediction": results, "message": "model version 2"}
+        for i, item in enumerate(data):
+            save_prediction(item.dict(), results[i])
+
+        log_event("batch_prediction", {"count": len(results)})
+
+        return {
+            "predictions": results,
+            "message": "model version v2"
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
