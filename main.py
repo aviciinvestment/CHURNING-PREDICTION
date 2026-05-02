@@ -20,7 +20,7 @@ from typing import List
 
 import psycopg2
 
-conn = psycopg2.connect(os.getenv("postgresql://churningapp_user:Xs0sb21PWtcQFIXAK4SmEhzZ7VLEOLVf@dpg-d7qr5mugvqtc73b26qtg-a.oregon-postgres.render.com/churningapp"))
+conn = psycopg2.connect(os.getenv("postgresql://churningapp_user:Xs0sb21PWtcQFIXAK4SmEhzZ7VLEOLVf@dpg-d7qr5mugvqtc73b26qtg-a/churningapp"))
 cursor = conn.cursor()
 
 
