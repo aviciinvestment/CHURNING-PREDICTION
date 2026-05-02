@@ -18,9 +18,9 @@ import asyncio
 from typing import List
 
 
-import sqlite3
+import psycopg2
 
-conn = sqlite3.connect("ai_logs.db", check_same_thread=False)
+conn = psycopg2.connect(os.getenv("postgresql://churningapp_user:Xs0sb21PWtcQFIXAK4SmEhzZ7VLEOLVf@dpg-d7qr5mugvqtc73b26qtg-a.oregon-postgres.render.com/churningapp"))
 cursor = conn.cursor()
 
 
@@ -28,15 +28,7 @@ print(os.listdir())
 # ===================== APP INIT =====================
 app = FastAPI()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS predictions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    input TEXT,
-    prediction REAL,
-    timestamp TEXT
-)
-""")
-conn.commit()
+
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -160,6 +152,12 @@ async def predict_score(request: Request, data: UserInput, api_key: str = Depend
 
         save_prediction(data.dict(), result)
 
+        cursor.execute(
+            "INSERT INTO predictions (input, prediction, timestamp) VALUES (%s, %s, %s)",
+            (str(data), result, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+
         return {
             "predicted score": result,
             "message": "model version v1"
@@ -203,6 +201,12 @@ async def predict_batch(request: Request, data: List[UserInput], api_key: str = 
             save_prediction(item.dict(), results[i])
 
         log_event("batch_prediction", {"count": len(results)})
+
+        cursor.execute(
+            "INSERT INTO predictions (input, prediction, timestamp) VALUES (%s, %s, %s)",
+            (str(data), results, datetime.utcnow().isoformat())
+        )
+        conn.commit()
 
         return {
             "predictions": results,
