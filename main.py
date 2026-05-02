@@ -49,8 +49,12 @@ model_path = os.path.join(BASE_DIR, "tf_model.h5")
 preprocessor_path = os.path.join(BASE_DIR, "preprocessing.pkl")
 
 # ===================== LOAD MODEL =====================
-model = tf.keras.models.load_model(model_path)
-preprocessor = joblib.load(preprocessor_path)
+def load_model():
+    global model, preprocessor
+    if model is None:
+        model = tf.keras.models.load_model("tf_model.h5")
+    if preprocessor is None:
+        preprocessor = joblib.load("preprocessing.pkl")
 
 # ===================== LOGGING =====================
 logging.basicConfig(level=logging.INFO)
@@ -115,6 +119,7 @@ def rate_limit_handler(request: Request, exc):
 async def predict_score(request: Request, data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
         log_event("request_received", data.dict())
+        load_model()
 
         input_key = str(data.dict())
 
@@ -197,6 +202,7 @@ async def predict_batch(request: Request, data: List[UserInput], api_key: str = 
             })
 
         df = pd.DataFrame(rows)
+        load_model()
 
         processed = preprocessor.transform(df)
         processed = processed.toarray() if hasattr(processed, "toarray") else processed
