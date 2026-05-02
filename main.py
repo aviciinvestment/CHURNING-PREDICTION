@@ -10,11 +10,22 @@ from pydantic import BaseModel, Field
 import logging
 import json
 from datetime import datetime
-import os
 import time
 import asyncio
 from typing import List
 import psycopg2
+
+import os
+
+port = int(os.getenv("PORT", 8000))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+
+
+
 
 # ================= DATABASE =================
 DATABASE_URL = os.getenv("DATABASE_URL")
