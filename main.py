@@ -20,6 +20,7 @@ import tensorflow as tf
 # ================= APP =================
 app = FastAPI()
 
+# ================= RATE LIMIT =================
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -37,8 +38,6 @@ if DATABASE_URL.startswith("postgres://"):
 model = None
 preprocessor = None
 cache = {}
-
-BASE_DIR = os.getcwd()
 
 # ================= DB =================
 def get_db_connection():
@@ -64,7 +63,7 @@ def init_db():
 
 init_db()
 
-# ================= MODEL LOADING (LAZY SAFE) =================
+# ================= MODEL LOADING =================
 def load_model():
     global model, preprocessor
 
@@ -108,7 +107,7 @@ def save_prediction(data, result, latency):
     conn.commit()
     conn.close()
 
-# ================= INPUT MODEL =================
+# ================= INPUT SCHEMA =================
 from pydantic import BaseModel, Field
 
 class UserInput(BaseModel):
@@ -128,7 +127,7 @@ class UserInput(BaseModel):
 def home():
     return {"message": "API is running"}
 
-# ================= RATE LIMIT =================
+# ================= ERROR HANDLER =================
 @app.exception_handler(RateLimitExceeded)
 def rate_limit_handler(request: Request, exc):
     return JSONResponse(
@@ -190,9 +189,7 @@ async def predict_batch(request: Request, data: List[UserInput], api_key: str = 
 
     log_event("batch_prediction", {"count": len(results)})
 
-    return {
-        "predictions": results
-    }
+    return {"predictions": results}
 
 # ================= ANALYTICS =================
 @app.get("/analytics")
@@ -216,4 +213,38 @@ def analytics():
         "total_requests": total,
         "average_latency": avg_latency,
         "average_prediction": avg_prediction
+    }
+
+# ================= DRIFT MONITORING (DAY 26 CORE) =================
+@app.get("/drift")
+def drift_detection():
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT AVG(latency) FROM predictions")
+    avg_latency = cur.fetchone()[0]
+
+    cur.execute("SELECT AVG(prediction) FROM predictions")
+    avg_prediction = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM predictions")
+    total = cur.fetchone()[0]
+
+    conn.close()
+
+    drift_flag = False
+
+    # SIMPLE DRIFT RULES
+    if avg_latency and avg_latency > 1.0:
+        drift_flag = True
+
+    if avg_prediction and (avg_prediction < 0.3 or avg_prediction > 0.8):
+        drift_flag = True
+
+    return {
+        "total_requests": total,
+        "average_latency": avg_latency,
+        "average_prediction": avg_prediction,
+        "drift_detected": drift_flag
     }
