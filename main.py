@@ -235,6 +235,31 @@ def drift(api_key: str = Depends(verify_api_key)):
         "status": "drift detected" if drift_score > 0.2 else "stable"
     }
 
+@app.get("/logs")
+def get_logs(api_key: str = Depends(verify_api_key)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, input, prediction, latency, timestamp
+        FROM predictions
+        ORDER BY id DESC
+        LIMIT 50
+    """)
+    
+    rows = cur.fetchall()
+
+    logs = []
+    for r in rows:
+        logs.append({
+            "id": r[0],
+            "input": r[1],
+            "prediction": r[2],
+            "latency": r[3],
+            "timestamp": r[4]
+        })
+
+    return logs
+
 # ================= RUN =================
 if __name__ == "__main__":
     import uvicorn
