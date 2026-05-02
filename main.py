@@ -17,12 +17,20 @@ import time
 import asyncio
 from typing import List
 
-
 import psycopg2
 
-conn = psycopg2.connect(os.getenv("postgresql://churningapp_user:Xs0sb21PWtcQFIXAK4SmEhzZ7VLEOLVf@dpg-d7qr5mugvqtc73b26qtg-a/churningapp"))
-cursor = conn.cursor()
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL not set")
+
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+
+conn = psycopg2.connect(DATABASE_URL)
+cursor = conn.cursor()
 
 print(os.listdir())
 # ===================== APP INIT =====================
