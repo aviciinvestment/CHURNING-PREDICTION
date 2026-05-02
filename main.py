@@ -6,8 +6,6 @@ from slowapi.errors import RateLimitExceeded
 
 import pandas as pd
 import io
-import joblib
-import tensorflow as tf
 from pydantic import BaseModel, Field
 import logging
 import json
@@ -40,6 +38,17 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
+def load_model():
+    global model, preprocessor
+    import tensorflow as tf   # 👈 IMPORTANT: lazy import
+
+    if model is None:
+        model = tf.keras.models.load_model("tf_model.h5")
+
+    if preprocessor is None:
+        import joblib
+        preprocessor = joblib.load("preprocessing.pkl")
+
 # ================= APP =================
 app = FastAPI()
 
@@ -52,11 +61,16 @@ API_KEY = os.getenv("API_KEY")
 model = None
 preprocessor = None
 
+
 def load_model():
     global model, preprocessor
+    import tensorflow as tf   # 👈 IMPORTANT: lazy import
+
     if model is None:
         model = tf.keras.models.load_model("tf_model.h5")
+
     if preprocessor is None:
+        import joblib
         preprocessor = joblib.load("preprocessing.pkl")
 
 # ================= LOGGING =================
