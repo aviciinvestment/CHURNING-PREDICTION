@@ -5,28 +5,27 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 import pandas as pd
+from pydantic import BaseModel, Field
 import logging
 import json
 from datetime import datetime
 import time
 import asyncio
 from typing import List
+import psycopg2
 import os
 
-import psycopg2
-import joblib
-import tensorflow as tf
+# ================= PORT (RENDER FIX) =================
+PORT = int(os.getenv("PORT", 8000))
 
 # ================= APP =================
 app = FastAPI()
-
-# ================= RATE LIMIT =================
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 # ================= ENV =================
-API_KEY = os.getenv("API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+API_KEY = os.getenv("API_KEY")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL not set")
@@ -34,28 +33,25 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ================= GLOBALS =================
-model = None
-preprocessor = None
-cache = {}
+# ================= DB CONNECT FUNCTION (SAFE) =================
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
 
-# ================= DB =================
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
-
+# ================= INIT DB =================
 def init_db():
-    conn = get_db_connection()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
-            id SERIAL PRIMARY KEY,
-            input TEXT,
-            prediction FLOAT,
-            latency FLOAT,
-            model_version TEXT,
-            timestamp TEXT
-        )
+    CREATE TABLE IF NOT EXISTS predictions (
+        id SERIAL PRIMARY KEY,
+        input TEXT,
+        prediction FLOAT,
+        latency FLOAT DEFAULT 0,
+        model_version TEXT DEFAULT 'v1',
+        timestamp TEXT
+    )
     """)
 
     conn.commit()
@@ -63,9 +59,15 @@ def init_db():
 
 init_db()
 
-# ================= MODEL LOADING =================
+# ================= MODEL =================
+model = None
+preprocessor = None
+
 def load_model():
     global model, preprocessor
+
+    import tensorflow as tf
+    import joblib
 
     if model is None:
         model = tf.keras.models.load_model("tf_model.h5")
@@ -80,8 +82,11 @@ def log_event(event, data):
     logging.info(json.dumps({
         "event": event,
         "data": data,
-        "timestamp": datetime.utcnow().isoformat()
+        "time": datetime.utcnow().isoformat()
     }))
+
+# ================= CACHE =================
+cache = {}
 
 # ================= AUTH =================
 def verify_api_key(x_api_key: str = Header(...)):
@@ -89,56 +94,51 @@ def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 # ================= SAVE TO DB =================
-def save_prediction(data, result, latency):
-    conn = get_db_connection()
+def save_prediction(data, result, latency, model_version="v1"):
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
         INSERT INTO predictions (input, prediction, latency, model_version, timestamp)
         VALUES (%s, %s, %s, %s, %s)
     """, (
-        str(data),
+        json.dumps(data),
         float(result),
         float(latency),
-        "v1",
+        model_version,
         datetime.utcnow().isoformat()
     ))
 
     conn.commit()
     conn.close()
 
-# ================= INPUT SCHEMA =================
-from pydantic import BaseModel, Field
-
+# ================= INPUT =================
 class UserInput(BaseModel):
     CreditScore: float = Field(..., ge=300, le=900)
     Age: int = Field(..., ge=18, le=100)
-    Tenure: float
-    Balance: float
-    NumOfProducts: float
-    HasCrCard: int
-    IsActiveMember: int
-    EstimatedSalary: float
+    Tenure: float = Field(..., ge=0, le=50)
+    Balance: float = Field(..., ge=0)
+    NumOfProducts: float = Field(..., ge=1, le=10)
+    HasCrCard: int = Field(..., ge=0, le=1)
+    IsActiveMember: int = Field(..., ge=0, le=1)
+    EstimatedSalary: float = Field(..., ge=0)
     Geography: str
     Gender: str
 
 # ================= ROOT =================
 @app.get("/")
 def home():
-    return {"message": "API is running"}
+    return {"message": "API running 🚀"}
 
-# ================= ERROR HANDLER =================
+# ================= RATE LIMIT =================
 @app.exception_handler(RateLimitExceeded)
 def rate_limit_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=429,
-        content={"error": "Too many requests"}
-    )
+    return JSONResponse(status_code=429, content={"error": "Too many requests"})
 
 # ================= SINGLE PREDICTION =================
 @app.post("/v1/predict")
 @limiter.limit("10/minute")
-async def predict(request: Request, data: UserInput, api_key: str = Depends(verify_api_key)):
+async def predict(data: UserInput, request: Request, api_key: str = Depends(verify_api_key)):
 
     load_model()
 
@@ -148,54 +148,55 @@ async def predict(request: Request, data: UserInput, api_key: str = Depends(veri
         return {"prediction": cache[key], "cached": True}
 
     df = pd.DataFrame([data.dict()])
-
     processed = preprocessor.transform(df)
     processed = processed.toarray() if hasattr(processed, "toarray") else processed
 
     start = time.time()
     prediction = await asyncio.to_thread(model.predict, processed)
     result = float(prediction.flatten()[0] >= 0.5)
-    end = time.time()
+    latency = time.time() - start
 
     cache[key] = result
 
-    log_event("prediction", data.dict())
+    save_prediction(data.dict(), result, latency)
 
-    save_prediction(data.dict(), result, end - start)
+    log_event("prediction", data.dict())
 
     return {
         "prediction": result,
-        "latency": round(end - start, 4)
+        "latency": latency
     }
 
-# ================= BATCH PREDICTION =================
+# ================= BATCH =================
 @app.post("/v2/predict")
 @limiter.limit("10/minute")
-async def predict_batch(request: Request, data: List[UserInput], api_key: str = Depends(verify_api_key)):
+async def predict_batch(data: List[UserInput], request: Request, api_key: str = Depends(verify_api_key)):
 
     load_model()
 
     df = pd.DataFrame([d.dict() for d in data])
-
     processed = preprocessor.transform(df)
     processed = processed.toarray() if hasattr(processed, "toarray") else processed
 
+    start = time.time()
     prediction = await asyncio.to_thread(model.predict, processed)
+    latency = time.time() - start
 
     results = [float(p >= 0.5) for p in prediction.flatten()]
 
     for i, item in enumerate(data):
-        save_prediction(item.dict(), results[i], 0)
+        save_prediction(item.dict(), results[i], latency)
 
-    log_event("batch_prediction", {"count": len(results)})
+    return {
+        "predictions": results,
+        "latency": latency
+    }
 
-    return {"predictions": results}
-
-# ================= ANALYTICS =================
+# ================= ANALYTICS (DAY 28 UPGRADE) =================
 @app.get("/analytics")
-def analytics():
+def analytics(api_key: str = Depends(verify_api_key)):
 
-    conn = get_db_connection()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM predictions")
@@ -211,40 +212,30 @@ def analytics():
 
     return {
         "total_requests": total,
-        "average_latency": avg_latency,
-        "average_prediction": avg_prediction
+        "avg_latency": avg_latency,
+        "avg_prediction_rate": avg_prediction
     }
 
-# ================= DRIFT MONITORING (DAY 26 CORE) =================
+# ================= DRIFT DETECTION (UPGRADED) =================
 @app.get("/drift")
-def drift_detection():
+def drift(api_key: str = Depends(verify_api_key)):
 
-    conn = get_db_connection()
+    conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("SELECT AVG(latency) FROM predictions")
-    avg_latency = cur.fetchone()[0]
-
     cur.execute("SELECT AVG(prediction) FROM predictions")
-    avg_prediction = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM predictions")
-    total = cur.fetchone()[0]
+    avg_pred = cur.fetchone()[0] or 0.5
 
     conn.close()
 
-    drift_flag = False
-
-    # SIMPLE DRIFT RULES
-    if avg_latency and avg_latency > 1.0:
-        drift_flag = True
-
-    if avg_prediction and (avg_prediction < 0.3 or avg_prediction > 0.8):
-        drift_flag = True
+    drift_score = abs(avg_pred - 0.5)
 
     return {
-        "total_requests": total,
-        "average_latency": avg_latency,
-        "average_prediction": avg_prediction,
-        "drift_detected": drift_flag
+        "drift_score": drift_score,
+        "status": "drift detected" if drift_score > 0.2 else "stable"
     }
+
+# ================= RUN =================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
