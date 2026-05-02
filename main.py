@@ -16,10 +16,9 @@ import os
 import time
 import asyncio
 from typing import List
-
 import psycopg2
 
-
+# ================= DATABASE =================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -28,27 +27,31 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
-print(os.listdir())
-# ===================== APP INIT =====================
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS predictions (
+    id SERIAL PRIMARY KEY,
+    input TEXT,
+    prediction FLOAT,
+    timestamp TEXT
+)
+""")
+conn.commit()
+
+# ================= APP =================
 app = FastAPI()
-
-
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
-# ===================== CONFIG =====================
 API_KEY = os.getenv("API_KEY")
 
-BASE_DIR = os.getcwd()
-model_path = os.path.join(BASE_DIR, "tf_model.h5")
-preprocessor_path = os.path.join(BASE_DIR, "preprocessing.pkl")
+# ================= MODEL (LAZY LOAD FIX) =================
+model = None
+preprocessor = None
 
-# ===================== LOAD MODEL =====================
 def load_model():
     global model, preprocessor
     if model is None:
@@ -56,38 +59,33 @@ def load_model():
     if preprocessor is None:
         preprocessor = joblib.load("preprocessing.pkl")
 
-# ===================== LOGGING =====================
+# ================= LOGGING =================
 logging.basicConfig(level=logging.INFO)
 
 def log_event(event_type, data):
-    log_data = {
+    logging.info(json.dumps({
         "event": event_type,
         "data": data,
         "timestamp": datetime.utcnow().isoformat()
-    }
-    logging.info(json.dumps(log_data))
+    }))
 
-# ===================== CACHE =====================
+# ================= CACHE =================
 cache = {}
 
-# ===================== AUTH =====================
+# ================= AUTH =================
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-# ===================== DATA SAVE =====================
+# ================= SAVE =================
 def save_prediction(data, result):
-    cursor.execute("""
-        INSERT INTO predictions (input, prediction, timestamp)
-        VALUES (?, ?, ?)
-    """, (
-        str(data),
-        result,
-        datetime.utcnow().isoformat()
-    ))
+    cursor.execute(
+        "INSERT INTO predictions (input, prediction, timestamp) VALUES (%s, %s, %s)",
+        (str(data), float(result), datetime.utcnow().isoformat())
+    )
     conn.commit()
 
-# ===================== MODEL INPUT =====================
+# ================= MODEL INPUT =================
 class UserInput(BaseModel):
     CreditScore: float = Field(..., ge=300, le=900)
     Age: int = Field(..., ge=18, le=100)
@@ -100,132 +98,71 @@ class UserInput(BaseModel):
     Geography: str
     Gender: str
 
-# ===================== ROOT =====================
+# ================= ROOT =================
 @app.get("/")
 def home():
     return {"message": "API is working"}
 
-# ===================== RATE LIMIT HANDLER =====================
+# ================= RATE LIMIT =================
 @app.exception_handler(RateLimitExceeded)
 def rate_limit_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=429,
-        content={"error": "Too many requests. Slow down."}
-    )
+    return JSONResponse(status_code=429, content={"error": "Too many requests"})
 
-# ===================== SINGLE PREDICTION =====================
+# ================= SINGLE PREDICTION =================
 @app.post("/v1/predict")
 @limiter.limit("10/minute")
 async def predict_score(request: Request, data: UserInput, api_key: str = Depends(verify_api_key)):
     try:
-        log_event("request_received", data.dict())
         load_model()
 
-        input_key = str(data.dict())
+        key = str(data.dict())
 
-        # CACHE CHECK
-        if input_key in cache:
-            log_event("cache_hit", data.dict())
-            return {"predicted score": cache[input_key], "message": "cached result"}
+        if key in cache:
+            return {"cached": cache[key]}
 
-        # PREPARE DATA
-        new_data = pd.DataFrame({
-            "CreditScore": [data.CreditScore],
-            "Age": [data.Age],
-            "Tenure": [data.Tenure],
-            "Balance": [data.Balance],
-            "NumOfProducts": [data.NumOfProducts],
-            "HasCrCard": [data.HasCrCard],
-            "IsActiveMember": [data.IsActiveMember],
-            "EstimatedSalary": [data.EstimatedSalary],
-            "Geography": [data.Geography],
-            "Gender": [data.Gender]
-        })
+        df = pd.DataFrame([data.dict()])
 
-        new_processed = preprocessor.transform(new_data)
-        new_processed = new_processed.toarray() if hasattr(new_processed, "toarray") else new_processed
+        processed = preprocessor.transform(df)
+        processed = processed.toarray() if hasattr(processed, "toarray") else processed
 
-        # PERFORMANCE TRACKING
-        start_time = time.time()
-
-        prediction = await asyncio.to_thread(model.predict, new_processed)
-
+        start = time.time()
+        prediction = await asyncio.to_thread(model.predict, processed)
         result = float(prediction.flatten()[0] >= 0.5)
+        end = time.time()
 
-        cache[input_key] = result
+        cache[key] = result
 
-        end_time = time.time()
-
-        log_event("performance", {"latency_seconds": end_time - start_time})
-
-        log_event("prediction_made", {
-            "input": data.dict(),
-            "result": result
-        })
+        log_event("prediction", data.dict())
 
         save_prediction(data.dict(), result)
 
-        cursor.execute(
-            "INSERT INTO predictions (input, prediction, timestamp) VALUES (%s, %s, %s)",
-            (str(data), result, datetime.utcnow().isoformat())
-        )
-        conn.commit()
-
         return {
-            "predicted score": result,
-            "message": "model version v1"
+            "prediction": result,
+            "latency": end - start
         }
 
     except Exception as e:
-        logging.error(f"Error occurred: {str(e)}")
         return {"error": str(e)}
 
-# ===================== BATCH PREDICTION =====================
+# ================= BATCH =================
 @app.post("/v2/predict")
 @limiter.limit("10/minute")
 async def predict_batch(request: Request, data: List[UserInput], api_key: str = Depends(verify_api_key)):
     try:
-        rows = []
-
-        for item in data:
-            rows.append({
-                "CreditScore": item.CreditScore,
-                "Age": item.Age,
-                "Tenure": item.Tenure,
-                "Balance": item.Balance,
-                "NumOfProducts": item.NumOfProducts,
-                "HasCrCard": item.HasCrCard,
-                "IsActiveMember": item.IsActiveMember,
-                "EstimatedSalary": item.EstimatedSalary,
-                "Geography": item.Geography,
-                "Gender": item.Gender
-            })
-
-        df = pd.DataFrame(rows)
         load_model()
+
+        df = pd.DataFrame([d.dict() for d in data])
 
         processed = preprocessor.transform(df)
         processed = processed.toarray() if hasattr(processed, "toarray") else processed
 
         prediction = await asyncio.to_thread(model.predict, processed)
-
         results = [float(p >= 0.5) for p in prediction.flatten()]
 
         for i, item in enumerate(data):
             save_prediction(item.dict(), results[i])
 
-        log_event("batch_prediction", {"count": len(results)})
-
-        cursor.execute(
-            "INSERT INTO predictions (input, prediction, timestamp) VALUES (%s, %s, %s)",
-            (str(data), results, datetime.utcnow().isoformat())
-        )
-        conn.commit()
-
-        return {
-            "predictions": results,
-            "message": "model version v2"
-        }
+        return {"predictions": results}
 
     except Exception as e:
         return {"error": str(e)}
