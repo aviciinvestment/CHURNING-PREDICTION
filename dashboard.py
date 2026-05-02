@@ -1,57 +1,74 @@
 import streamlit as st
-import psycopg2
+import requests
 import pandas as pd
-import os
 
-# ================= DB CONNECTION =================
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ================= CONFIG =================
+API_URL = "https://churning-prediction.onrender.com/"  # 🔴 CHANGE THIS
+API_KEY = "helloworld"  # 🔴 CHANGE THIS
 
-conn = psycopg2.connect(DATABASE_URL)
-cur = conn.cursor()
+headers = {
+    "x-api-key": API_KEY
+}
 
+# ================= PAGE =================
 st.set_page_config(page_title="AI Dashboard", layout="wide")
 
-st.title("📊 AI MODEL DASHBOARD")
+st.title("📊 AI Model Monitoring Dashboard")
+st.caption("Live AI Monitoring System 🚀")
 
-# ================= LOAD DATA =================
-cur.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT 100")
-rows = cur.fetchall()
+# ================= FETCH DATA =================
+@st.cache_data(ttl=10)
+def fetch_data():
+    try:
+        analytics = requests.get(f"{API_URL}/analytics", headers=headers).json()
+        drift = requests.get(f"{API_URL}/drift", headers=headers).json()
+        return analytics, drift
+    except Exception as e:
+        return None, None
 
-df = pd.DataFrame(rows, columns=[
-    "id", "input", "prediction", "latency", "model_version", "timestamp"
-])
+analytics, drift = fetch_data()
+
+# ================= ERROR HANDLING =================
+if not analytics or not drift:
+    st.error("❌ Failed to fetch data from API")
+    st.stop()
 
 # ================= METRICS =================
-cur.execute("SELECT COUNT(*) FROM predictions")
-total = cur.fetchone()[0]
-
-cur.execute("SELECT AVG(latency) FROM predictions")
-avg_latency = cur.fetchone()[0]
-
-cur.execute("SELECT AVG(prediction) FROM predictions")
-avg_prediction = cur.fetchone()[0]
-
 col1, col2, col3 = st.columns(3)
 
-col1.metric("Total Predictions", total)
-col2.metric("Avg Latency (s)", round(avg_latency or 0, 4))
-col3.metric("Avg Prediction Rate", round(avg_prediction or 0, 4))
-
-st.divider()
+col1.metric("Total Requests", analytics.get("total_requests", 0))
+col2.metric("Avg Latency", round(analytics.get("avg_latency", 0), 4))
+col3.metric("Avg Prediction", round(analytics.get("avg_prediction", 0), 4))
 
 # ================= DRIFT =================
-st.subheader("📉 Model Drift Insight")
+st.subheader("📡 Model Drift Status")
 
-drift = abs((avg_prediction or 0.5) - 0.5)
-
-if drift > 0.2:
-    st.error(f"Drift Detected 🚨 (score: {drift:.3f})")
+if drift.get("status") == "drift detected":
+    st.error(f"⚠️ Drift Detected (score: {drift.get('drift_score', 0):.2f})")
 else:
-    st.success(f"Model Stable ✅ (score: {drift:.3f})")
+    st.success("✅ Model Stable")
 
-st.divider()
+# ================= LATENCY BAR =================
+st.subheader("⚡ Latency Overview")
 
-# ================= TABLE =================
-st.subheader("📦 Recent Predictions")
+latency = analytics.get("avg_latency", 0)
+st.progress(min(latency, 1.0))
 
-st.dataframe(df)
+# ================= SIMPLE CHART =================
+st.subheader("📈 Metrics Visualization")
+
+data = pd.DataFrame({
+    "Metric": ["Total Requests", "Avg Latency", "Avg Prediction"],
+    "Value": [
+        analytics.get("total_requests", 0),
+        analytics.get("avg_latency", 0),
+        analytics.get("avg_prediction", 0)
+    ]
+})
+
+st.bar_chart(data.set_index("Metric"))
+
+# ================= REFRESH =================
+if st.button("🔄 Refresh"):
+    st.cache_data.clear()
+    st.rerun()
