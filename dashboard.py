@@ -17,8 +17,8 @@ st.caption("Real-time Model Observability 🚀")
 def fetch_all():
     try:
         analytics = requests.get(f"{API_URL}/analytics", headers=headers).json()
-        drift = requests.get(f"{API_URL}/drift", headers=headers).json()
-        logs = requests.get(f"{API_URL}/logs", headers=headers).json()
+        drift = requests.get(f"{API_URL}/drift").json()
+        logs = requests.get(f"{API_URL}/logs").json()
         return analytics, drift, logs
     except:
         return None, None, None
