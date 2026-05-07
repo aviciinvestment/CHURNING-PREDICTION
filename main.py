@@ -260,6 +260,8 @@ def get_logs(api_key: str = Depends(verify_api_key)):
 
     return logs
 
+
+
 # ================= RUN =================
 if __name__ == "__main__":
     import uvicorn

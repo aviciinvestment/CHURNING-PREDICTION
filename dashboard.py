@@ -34,7 +34,7 @@ col1, col2, col3 = st.columns(3)
 
 col1.metric("Total Requests", analytics["total_requests"])
 col2.metric("Avg Latency", round(analytics["avg_latency"], 4))
-col3.metric("Avg Prediction", round(analytics["avg_prediction"], 4))
+
 
 # ================= ALERT SYSTEM =================
 st.subheader("🚨 System Alerts")
