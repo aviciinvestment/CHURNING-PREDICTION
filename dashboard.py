@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 
 # ================= CONFIG =================
-API_URL = "https://https://churning-prediction.onrender.com"
+API_URL = "https://churning-prediction.onrender.com"
 API_KEY = "helloworld"
 
 headers = {"x-api-key": API_KEY}
