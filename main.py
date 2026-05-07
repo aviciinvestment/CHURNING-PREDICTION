@@ -4,6 +4,11 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordBearer
+from datetime import timedelta
+
 import pandas as pd
 from pydantic import BaseModel, Field
 import logging
@@ -23,7 +28,22 @@ app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
+#=========================key==============================
+SECRET_KEY = "supersecretkey"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto"
+)
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="login"
+)
+
 # ================= ENV =================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY")
 
@@ -62,6 +82,29 @@ init_db()
 # ================= MODEL =================
 model = None
 preprocessor = None
+
+
+#======================uth
+fake_user = {
+    "username": "admin",
+    "password": pwd_context.hash("admin123")
+}
+
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+
+    expire = datetime.utcnow() + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    to_encode.update({"exp": expire})
+
+    return jwt.encode(
+        to_encode,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
 
 def load_model():
     global model, preprocessor
@@ -194,7 +237,7 @@ async def predict_batch(data: List[UserInput], request: Request, api_key: str = 
 
 # ================= ANALYTICS (DAY 28 UPGRADE) =================
 @app.get("/analytics")
-def analytics(api_key: str = Depends(verify_api_key)):
+def analytics(token: str = Depends(oauth2_scheme)):
 
     conn = get_db()
     cur = conn.cursor()
@@ -259,6 +302,27 @@ def get_logs(api_key: str = Depends(verify_api_key)):
         })
 
     return logs
+
+@app.post("/login")
+def login(username: str, password: str):
+
+    if username != fake_user["username"]:
+        raise HTTPException(status_code=401)
+
+    if not pwd_context.verify(
+        password,
+        fake_user["password"]
+    ):
+        raise HTTPException(status_code=401)
+
+    token = create_access_token(
+        {"sub": username}
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
 
 
 

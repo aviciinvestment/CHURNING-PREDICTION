@@ -5,8 +5,10 @@ import pandas as pd
 # ================= CONFIG =================
 API_URL = "https://churning-prediction.onrender.com"
 API_KEY = "helloworld"
-
-headers = {"x-api-key": API_KEY}
+TOKEN = "paste_your_token_here"
+headers = {
+    "Authorization": f"Bearer {TOKEN}"
+}
 
 st.set_page_config(layout="wide")
 st.title("📊 AI Monitoring Dashboard")
